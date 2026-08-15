@@ -94,7 +94,10 @@ service cloud.firestore {
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalPoints', 'bonusPoints'])
               && request.resource.data.totalPoints is int
               && request.resource.data.bonusPoints is int);
-        allow delete: if false;
+        // Only via EventRepository.deleteEvent's cascade — a live event never
+        // deletes participants, so this can't be used to erase progress out
+        // from under an active game.
+        allow delete: if isAdmin();
 
         // doc ID == journalId, so create-only + immutable makes duplicate scans a no-op.
         match /scans/{journalId} {
@@ -103,7 +106,7 @@ service cloud.firestore {
             && request.resource.data.scannedAt is timestamp
             && isEventLive(eventId);
           allow update: if false;
-          allow delete: if false;
+          allow delete: if isAdmin(); // event-delete cascade only, see participants/{uid} above.
         }
 
         // Running per-quiz progress, doc ID == journalId. Same posture as
@@ -129,7 +132,7 @@ service cloud.firestore {
             && request.resource.data.pointsEarned is int
             && request.resource.data.pointsEarned >= resource.data.pointsEarned
             && isEventLive(eventId);
-          allow delete: if false;
+          allow delete: if isAdmin(); // event-delete cascade only, see participants/{uid} above.
 
           // doc ID == questionId, create-only + immutable — same shape as
           // scans/{journalId} above, so a duplicate submit for the same
@@ -140,7 +143,7 @@ service cloud.firestore {
               && request.resource.data.keys().hasAll(['selectedOptionIds', 'isCorrect', 'points'])
               && isEventLive(eventId);
             allow update: if false;
-            allow delete: if false;
+            allow delete: if isAdmin(); // event-delete cascade only, see participants/{uid} above.
           }
         }
       }
@@ -159,7 +162,8 @@ service cloud.firestore {
           && request.resource.data.uid == request.auth.uid
           && request.resource.data.displayName is string
           && isEventLive(eventId);
-        allow update, delete: if false;
+        allow update: if false;
+        allow delete: if isAdmin(); // event-delete cascade only, see participants/{uid} above.
       }
     }
 
@@ -178,7 +182,8 @@ service cloud.firestore {
     match /joinCodes/{code} {
       allow read: if isSignedIn();
       allow create: if isAdmin() && request.resource.data.eventId is string;
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isAdmin(); // event-delete cascade only, releases the code for reuse.
     }
 
     // Reusable art/model URL library shown in the admin console's Assets tab and

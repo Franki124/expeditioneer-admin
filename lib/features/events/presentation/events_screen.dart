@@ -28,7 +28,8 @@ class _EventsScreenState extends State<EventsScreen> {
         backgroundColor: AppColors.navyPanel2,
         title: Text('Delete "${event.name}"?', style: AppTypography.body(fontWeight: FontWeight.w700)),
         content: Text(
-          'This permanently deletes the event and its quests. This cannot be undone.',
+          'This permanently deletes the event, its quests, and all participant data '
+          '(join records, scans, quiz progress, leaderboard standing). This cannot be undone.',
           style: AppTypography.body(),
         ),
         actions: [
@@ -44,7 +45,7 @@ class _EventsScreenState extends State<EventsScreen> {
       ),
     );
     if (confirmed == true && context.mounted) {
-      await context.read<EventRepository>().deleteEvent(event.id);
+      await context.read<EventRepository>().deleteEvent(event.id, event.joinCode);
     }
   }
 

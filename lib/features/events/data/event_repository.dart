@@ -99,18 +99,55 @@ class EventRepository {
     return _events.doc(eventId).update({'status': status});
   }
 
-  /// Deletes the event and its quests. Participant/scan/name-reservation
-  /// subcollections are intentionally left in place — Firestore rules keep
-  /// scans immutable (leaderboard integrity) even for admins, and orphaned
-  /// docs under a deleted event are harmless dead data. Archive is the
-  /// expected everyday action; Delete is for cleaning up test/mistaken events.
-  Future<void> deleteEvent(String eventId) async {
-    final journalsSnapshot = await _events.doc(eventId).collection('journals').get();
-    final batch = _firestore.batch();
-    for (final doc in journalsSnapshot.docs) {
-      batch.delete(doc.reference);
+  /// Deletes the event and cascades to every doc that only makes sense in
+  /// its context: participants (+ their scans, quiz progress, and quiz
+  /// answers), quests (+ their questions), name reservations, and the
+  /// joinCodes reservation (so the code can be reused by a future event).
+  /// Archive is the expected everyday action; Delete is for permanently
+  /// erasing test/mistaken events and all their data.
+  ///
+  /// No Cloud Functions in scope for this project (would require the Blaze
+  /// plan), so this reads every doc to delete client-side rather than via a
+  /// server-side recursive delete, then commits in chunks of 500 — Firestore's
+  /// per-batch write limit.
+  Future<void> deleteEvent(String eventId, String joinCode) async {
+    final eventDoc = _events.doc(eventId);
+    final refsToDelete = <DocumentReference<Map<String, dynamic>>>[];
+
+    final participantsSnapshot = await eventDoc.collection('participants').get();
+    for (final participant in participantsSnapshot.docs) {
+      final scansSnapshot = await participant.reference.collection('scans').get();
+      refsToDelete.addAll(scansSnapshot.docs.map((d) => d.reference));
+
+      final quizProgressSnapshot = await participant.reference.collection('quizProgress').get();
+      for (final progress in quizProgressSnapshot.docs) {
+        final answersSnapshot = await progress.reference.collection('answers').get();
+        refsToDelete.addAll(answersSnapshot.docs.map((d) => d.reference));
+        refsToDelete.add(progress.reference);
+      }
+      refsToDelete.add(participant.reference);
     }
-    batch.delete(_events.doc(eventId));
-    await batch.commit();
+
+    final journalsSnapshot = await eventDoc.collection('journals').get();
+    for (final journal in journalsSnapshot.docs) {
+      final questionsSnapshot = await journal.reference.collection('questions').get();
+      refsToDelete.addAll(questionsSnapshot.docs.map((d) => d.reference));
+      refsToDelete.add(journal.reference);
+    }
+
+    final nameReservationsSnapshot = await eventDoc.collection('nameReservations').get();
+    refsToDelete.addAll(nameReservationsSnapshot.docs.map((d) => d.reference));
+
+    if (joinCode.isNotEmpty) refsToDelete.add(_joinCodes.doc(joinCode));
+    refsToDelete.add(eventDoc);
+
+    const chunkSize = 500;
+    for (var i = 0; i < refsToDelete.length; i += chunkSize) {
+      final batch = _firestore.batch();
+      for (final ref in refsToDelete.skip(i).take(chunkSize)) {
+        batch.delete(ref);
+      }
+      await batch.commit();
+    }
   }
 }
