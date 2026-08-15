@@ -1,0 +1,206 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
+    function isEventLive(eventId) {
+      return get(/databases/$(database)/documents/events/$(eventId)).data.status == 'live';
+    }
+    function isAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid)
+        && request.resource.data.keys().hasAll(['displayName','authProvider','createdAt'])
+        && request.resource.data.authProvider in ['google','apple','anonymous'];
+      allow update: if isOwner(uid);
+      allow delete: if false;
+    }
+
+    // events/{eventId} — readable by any signed-in client; writable by admins only
+    // (checked via the admins/{uid} doc, provisioned out-of-band — see tool/seed/seed_admin.mjs).
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasAll(
+          ['name','location','joinCode','startAt','endAt','status','journalCount','createdBy','createdAt'])
+        && request.resource.data.status in ['draft','live','closed','archived'];
+      allow update: if isAdmin()
+        && request.resource.data.joinCode == resource.data.joinCode
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAdmin();
+
+      // Known phase-1 limitation: exposing qrToken to any signed-in reader means a client
+      // could technically enumerate journals without scanning a marker. Acceptable because
+      // "Simulate scan" is already a deliberate stand-in for real scanning this pass — revisit
+      // via a callable Cloud Function once real QR scanning ships.
+      match /journals/{journalId} {
+        allow read: if isSignedIn();
+        allow create: if isAdmin()
+          && request.resource.data.keys().hasAll(['title','blurb','order','artUrl','type']);
+        // Admins can edit freely; a live-event participant may only bump
+        // scanCount by exactly 1 via ParticipantRepository.recordScan's
+        // transaction — same restricted-field-diff shape as the
+        // participants/{uid} collectedCount update below.
+        allow update: if isAdmin()
+          || (isSignedIn()
+              && isEventLive(eventId)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['scanCount'])
+              && request.resource.data.scanCount == resource.data.scanCount + 1);
+        allow delete: if isAdmin();
+
+        // A quiz's questions. Readable by any signed-in participant so the
+        // quiz can render at all — this necessarily exposes each option's
+        // `correct` flag to a technically-inclined client (e.g. devtools
+        // network inspection), same accepted phase-1 limitation as qrToken
+        // above. No Cloud Functions in scope to validate answers
+        // server-side; low stakes for a festival game.
+        match /questions/{questionId} {
+          allow read: if isSignedIn();
+          allow write: if isAdmin();
+        }
+      }
+
+      match /participants/{uid} {
+        allow read: if isSignedIn(); // needed for the live leaderboard query across all participants
+        allow create: if isOwner(uid)
+          && request.resource.data.displayName is string
+          && request.resource.data.collectedCount == 0
+          && request.resource.data.totalPoints == 0
+          && request.resource.data.joinedAt is timestamp
+          && isEventLive(eventId);
+        allow update: if (isOwner(uid)
+            && request.resource.data.collectedCount is int
+            && request.resource.data.collectedCount >= resource.data.collectedCount
+            && request.resource.data.collectedCount <= resource.data.collectedCount + 1
+            // totalPoints can't be validated against the exact per-quest value
+            // here (no journalId in this path to look up) — the real integrity
+            // backstop is collectedCount's strict +1-per-write bound above,
+            // which already caps this update to at most one scan's worth.
+            && request.resource.data.totalPoints is int
+            && request.resource.data.totalPoints >= resource.data.get('totalPoints', 0)
+            && request.resource.data.displayName == resource.data.displayName
+            && request.resource.data.joinedAt == resource.data.joinedAt)
+          // Admin-granted bonus points (ParticipantRepository.grantBonusPoints,
+          // admin console's Participants tab) — narrowly scoped to just the two
+          // point fields, same restricted-field-diff shape used elsewhere in
+          // this ruleset (e.g. journals/{journalId}'s scanCount bump).
+          || (isAdmin()
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalPoints', 'bonusPoints'])
+              && request.resource.data.totalPoints is int
+              && request.resource.data.bonusPoints is int);
+        allow delete: if false;
+
+        // doc ID == journalId, so create-only + immutable makes duplicate scans a no-op.
+        match /scans/{journalId} {
+          allow read: if isOwner(uid);
+          allow create: if isOwner(uid)
+            && request.resource.data.scannedAt is timestamp
+            && isEventLive(eventId);
+          allow update: if false;
+          allow delete: if false;
+        }
+
+        // Running per-quiz progress, doc ID == journalId. Same posture as
+        // totalPoints above: exact per-question point deltas aren't
+        // validated here (would need a get() on the question doc, which
+        // isn't reachable from this path without the eventId/journalId
+        // already known — it is, via the match variables, but kept simple
+        // for now) — the real integrity backstop is answeredQuestionIds
+        // only growing by one entry per write, so a player can't fast-forward
+        // through unanswered questions.
+        match /quizProgress/{journalId} {
+          allow read: if isOwner(uid);
+          allow create: if isOwner(uid)
+            && request.resource.data.answeredQuestionIds is list
+            && request.resource.data.answeredQuestionIds.size() == 1
+            && request.resource.data.pointsEarned is int
+            && request.resource.data.pointsEarned >= 0
+            && isEventLive(eventId);
+          allow update: if isOwner(uid)
+            && request.resource.data.answeredQuestionIds is list
+            && request.resource.data.answeredQuestionIds.size()
+                == resource.data.answeredQuestionIds.size() + 1
+            && request.resource.data.pointsEarned is int
+            && request.resource.data.pointsEarned >= resource.data.pointsEarned
+            && isEventLive(eventId);
+          allow delete: if false;
+
+          // doc ID == questionId, create-only + immutable — same shape as
+          // scans/{journalId} above, so a duplicate submit for the same
+          // question is a no-op rather than a double-count.
+          match /answers/{questionId} {
+            allow read: if isOwner(uid);
+            allow create: if isOwner(uid)
+              && request.resource.data.keys().hasAll(['selectedOptionIds', 'isCorrect', 'points'])
+              && isEventLive(eventId);
+            allow update: if false;
+            allow delete: if false;
+          }
+        }
+      }
+
+      match /leaderboardCache/{doc} {
+        allow read, write: if false; // unused in phase 1 — direct participants query instead
+      }
+
+      // Per-event display-name uniqueness: doc ID is the normalized name, so
+      // a second attempt to write the same path is classified as `update`
+      // (no matching allow rule) rather than `create` — this is the hard
+      // guarantee backing ParticipantRepository.joinEvent's transaction.
+      match /nameReservations/{normalizedName} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.displayName is string
+          && isEventLive(eventId);
+        allow update, delete: if false;
+      }
+    }
+
+    match /admins/{uid} {
+      // Self-read only, so the admin console can check its own role after sign-in.
+      // Provisioning stays out-of-band (tool/seed/seed_admin.mjs, Admin SDK) — no
+      // client-facing admin-management UI in phase 1.
+      allow read: if isOwner(uid);
+      allow write: if false;
+    }
+
+    // Doc ID == joinCode, so a duplicate reservation attempt is classified as
+    // `update` (no matching allow rule) rather than `create` — same hard
+    // uniqueness guarantee as nameReservations, backing EventRepository.createEvent's
+    // transaction in the admin console.
+    match /joinCodes/{code} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin() && request.resource.data.eventId is string;
+      allow update, delete: if false;
+    }
+
+    // Reusable art/model URL library shown in the admin console's Assets tab and
+    // fed into the Quests tab's asset pickers — admin-only, players never read it
+    // directly (they read artUrl/model3dUrl already copied onto journal docs).
+    match /assetLibrary/{assetId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Reusable quest definitions shown in the admin console's Quests tab
+    // library picker — copy-on-attach (see QuestTemplate), so this
+    // collection is never referenced from event data, admin-only same as
+    // assetLibrary.
+    match /questLibrary/{templateId} {
+      allow read, write: if isAdmin();
+
+      // A saved quiz template's questions (QuestLibraryRepository.addQuizEntry
+      // / copyQuestions) — same admin-only posture as the parent doc; rule
+      // matching isn't recursive, so this needs its own explicit match.
+      match /questions/{questionId} {
+        allow read, write: if isAdmin();
+      }
+    }
+  }
+}

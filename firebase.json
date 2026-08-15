@@ -1,0 +1,18 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "flutter": {
+    "platforms": {
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "expeditioner-39b43",
+          "configurations": {
+            "web": "1:574980220198:web:c442cf52cc0aaa120e4de7"
+          }
+        }
+      }
+    }
+  }
+}
