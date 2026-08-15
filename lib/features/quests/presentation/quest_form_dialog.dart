@@ -640,7 +640,7 @@ class _QuestFormDialogState extends State<_QuestFormDialog> {
           ReorderableListView(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            onReorder: _reorderQuestions,
+            onReorderItem: _reorderQuestions,
             children: [
               for (var i = 0; i < _questions!.length; i++)
                 Padding(
@@ -769,16 +769,19 @@ class _AssetPreview extends StatelessWidget {
     }
     return ClipRRect(
       borderRadius: AppRadii.inputShape,
-      child: Image.network(
-        cloudinaryDeliveryUrl(url),
-        width: 48,
-        height: 48,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) => Container(
+      child: ColoredBox(
+        color: AppColors.navyPanel,
+        child: Image.network(
+          cloudinaryDeliveryUrl(url),
           width: 48,
           height: 48,
-          color: AppColors.navyPanel,
-          child: const Icon(Icons.broken_image_outlined, color: AppColors.creamDim),
+          fit: BoxFit.contain,
+          errorBuilder: (context, error, stackTrace) => Container(
+            width: 48,
+            height: 48,
+            color: AppColors.navyPanel,
+            child: const Icon(Icons.broken_image_outlined, color: AppColors.creamDim),
+          ),
         ),
       ),
     );
@@ -941,16 +944,19 @@ class _QuestionCard extends StatelessWidget {
           if (question.imageUrl != null) ...[
             ClipRRect(
               borderRadius: AppRadii.inputShape,
-              child: Image.network(
-                cloudinaryDeliveryUrl(question.imageUrl!),
-                width: 48,
-                height: 48,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) => Container(
+              child: ColoredBox(
+                color: AppColors.navyPanel2,
+                child: Image.network(
+                  cloudinaryDeliveryUrl(question.imageUrl!),
                   width: 48,
                   height: 48,
-                  color: AppColors.navyPanel2,
-                  child: const Icon(Icons.broken_image_outlined, color: AppColors.creamDim),
+                  fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) => Container(
+                    width: 48,
+                    height: 48,
+                    color: AppColors.navyPanel2,
+                    child: const Icon(Icons.broken_image_outlined, color: AppColors.creamDim),
+                  ),
                 ),
               ),
             ),
