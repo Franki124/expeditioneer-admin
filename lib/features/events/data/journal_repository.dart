@@ -15,6 +15,12 @@ class JournalRepository {
   DocumentReference<Map<String, dynamic>> _eventDoc(String eventId) =>
       _firestore.collection('events').doc(eventId);
 
+  /// Every write that changes what players see in a quest (text, art, quiz
+  /// questions) also bumps the event's `contentVersion`. The player app
+  /// keeps a downloaded copy of each event for offline play and refreshes
+  /// it when this number goes up.
+  static final _contentChanged = {'contentVersion': FieldValue.increment(1)};
+
   Stream<List<AdminJournal>> watchJournals(String eventId) {
     return _journals(eventId).orderBy('order').snapshots().map(
           (snapshot) => snapshot.docs.map(AdminJournal.fromDoc).toList(),
@@ -57,7 +63,7 @@ class JournalRepository {
         'scanCount': 0,
         'points': points,
       });
-      transaction.update(eventRef, {'journalCount': FieldValue.increment(1)});
+      transaction.update(eventRef, {'journalCount': FieldValue.increment(1), ..._contentChanged});
     });
   }
 
@@ -73,16 +79,19 @@ class JournalRepository {
     String? manualCode,
     int points = 10,
   }) {
-    return _journals(eventId).doc(journalId).update({
-      'title': title,
-      'blurb': blurb,
-      'order': order,
-      'artUrl': artUrl,
-      'type': type,
-      'model3dUrl': model3dUrl,
-      'manualCode': manualCode,
-      'points': points,
-    });
+    final batch = _firestore.batch()
+      ..update(_journals(eventId).doc(journalId), {
+        'title': title,
+        'blurb': blurb,
+        'order': order,
+        'artUrl': artUrl,
+        'type': type,
+        'model3dUrl': model3dUrl,
+        'manualCode': manualCode,
+        'points': points,
+      })
+      ..update(_eventDoc(eventId), _contentChanged);
+    return batch.commit();
   }
 
   /// Creates a quiz: the journal doc (`type: 'quiz'`, `questionCount`/
@@ -121,7 +130,7 @@ class JournalRepository {
     for (final question in questions) {
       batch.set(journalRef.collection('questions').doc(), question.toMap());
     }
-    batch.update(eventRef, {'journalCount': FieldValue.increment(1)});
+    batch.update(eventRef, {'journalCount': FieldValue.increment(1), ..._contentChanged});
     await batch.commit();
   }
 
@@ -160,6 +169,7 @@ class JournalRepository {
       'timerSeconds': timerSeconds,
       'questionCount': questions.length,
     });
+    batch.update(_eventDoc(eventId), _contentChanged);
     await batch.commit();
   }
 
@@ -186,7 +196,7 @@ class JournalRepository {
         transaction.delete(doc.reference);
       }
       transaction.delete(journalRef);
-      transaction.update(eventRef, {'journalCount': FieldValue.increment(-1)});
+      transaction.update(eventRef, {'journalCount': FieldValue.increment(-1), ..._contentChanged});
     });
   }
 }
